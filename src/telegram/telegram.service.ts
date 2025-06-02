@@ -8,6 +8,8 @@ interface MySession {
   seats?: number;
   hasWoman?: boolean;
   hasAC?: boolean;
+  time?: string;
+  acceptsPost?: boolean;
 }
 
 type MyContext = Context & { session: MySession };
@@ -17,17 +19,13 @@ export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
   private bot: Telegraf<MyContext>;
 
-  constructor(
-    
-  ) {
-   
-      
+  constructor() {
     this.bot = new Telegraf<MyContext>(process.env.BOT_TOKEN || '');
     this.bot.use(session());
     this.bot.use(async (ctx, next) => {
-        if (!ctx.session) ctx.session = {};
-        await next();
-      });
+      if (!ctx.session) ctx.session = {};
+      await next();
+    });
 
     // START
     this.bot.start(async (ctx) => {
@@ -149,8 +147,28 @@ export class TelegramService {
         }
 
         ctx.session.hasAC = text === 'Ha';
+        ctx.session.step = 'awaitingDriverTime';
+        await ctx.reply('Iltimos, jo‘nash vaqtini kiriting (masalan: 14:00):', Markup.removeKeyboard());
+      } else if (step === 'awaitingDriverTime') {
+        const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
+        if (!timeRegex.test(text)) {
+          return await ctx.reply('Iltimos, vaqtni HH:MM formatda kiriting (masalan: 08:30 yoki 17:45)');
+        }
 
-        const msg = `🚖 Taxi haydovchi:\n🛣 Yo‘nalish: ${ctx.session.route}\n📞 Tel: ${ctx.session.phone}\n👥 Joylar: ${ctx.session.seats}\n👩 Ayol yo‘lovchi: ${ctx.session.hasWoman ? 'Bor' : 'Yo‘q'}\n❄️ Konditsioner: ${ctx.session.hasAC ? 'Bor' : 'Yo‘q'}\n👤 ${ctx.from?.first_name || 'Ismsiz'}`;
+        ctx.session.time = text;
+        ctx.session.step = 'awaitingDriverPost';
+        await ctx.reply(
+          'Poshta qabul qilasizmi?',
+          Markup.keyboard([['Ha', 'Yo‘q']]).resize().oneTime()
+        );
+      } else if (step === 'awaitingDriverPost') {
+        if (!['Ha', 'Yo‘q'].includes(text)) {
+          return await ctx.reply('Iltimos, "Ha" yoki "Yo‘q" ni tanlang.');
+        }
+
+        ctx.session.acceptsPost = text === 'Ha';
+
+        const msg = `🚖 Taxi haydovchi:\n🛣 Yo‘nalish: ${ctx.session.route}\n📞 Tel: ${ctx.session.phone}\n👥 Joylar: ${ctx.session.seats}\n👩 Ayol yo‘lovchi: ${ctx.session.hasWoman ? 'Bor' : 'Yo‘q'}\n❄️ Konditsioner: ${ctx.session.hasAC ? 'Bor' : 'Yo‘q'}\n⏰ Jo‘nash vaqti: ${ctx.session.time}\n📦 Poshta: ${ctx.session.acceptsPost ? 'Qabul qilinadi' : 'Qabul qilinmaydi'}\n👤 ${ctx.from?.first_name || 'Ismsiz'}`;
 
         try {
           await this.safeSendMessage(process.env.GROUP_ID || '', msg);
@@ -160,10 +178,7 @@ export class TelegramService {
         }
 
         ctx.session = {};
-      }
-
-      // Default: noto‘g‘ri holat
-      else {
+      } else {
         await ctx.reply('Iltimos, /start buyrug‘ini yuboring va menyudan foydalaning.');
       }
     });
