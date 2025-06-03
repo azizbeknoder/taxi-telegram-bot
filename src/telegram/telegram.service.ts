@@ -32,7 +32,7 @@ export class TelegramService {
       ctx.session = {};
       await ctx.reply(
         'Salom! Siz foydalanuvchimisiz yoki taxi haydovchi?',
-        Markup.keyboard([['Foydalanuvchi', 'Taxi Haydovchi']])
+        Markup.keyboard([["Yo'lovchi", 'Taxi Haydovchi']])
           .resize()
           .oneTime()
       );
