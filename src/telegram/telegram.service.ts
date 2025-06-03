@@ -39,7 +39,7 @@ export class TelegramService {
     });
 
     // FOYDALANUVCHI
-    this.bot.hears('Foydalanuvchi', async (ctx) => {
+    this.bot.hears("Yo'lovchi", async (ctx) => {
       ctx.session.step = 'awaitingUserRoute';
       await ctx.reply(
         'Qayerdan qayergacha yoʻnalishni tanlang:',
