@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Telegraf, Markup, session, Context } from 'telegraf';
+import { Telegraf, Markup, Context, session } from 'telegraf';
 
 interface MySession {
   step?: string;
+  role?: 'passenger' | 'driver';
   route?: string;
   phone?: string;
   seats?: number;
@@ -12,24 +13,34 @@ interface MySession {
   acceptsPost?: boolean;
 }
 
-type MyContext = Context & { session: MySession };
+type MyContext = Context & { session: MySession | undefined };
 
 @Injectable()
 export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
   private bot: Telegraf<MyContext>;
 
+  // Yo‘lovchi va Haydovchi guruh chat IDlari
+  private readonly PASSENGER_GROUP_ID = -1002083291047;
+  private readonly DRIVER_GROUP_ID = -1002574496144;
+
   constructor() {
     this.bot = new Telegraf<MyContext>(process.env.BOT_TOKEN || '');
+
+    // Session middleware
     this.bot.use(session());
+
+    // Sessionni doim bo‘sh ob’ekt sifatida o‘rnatish
     this.bot.use(async (ctx, next) => {
-      if (!ctx.session) ctx.session = {};
+      if (!ctx.session) {
+        ctx.session = {};
+      }
       await next();
     });
 
-    // START
+    // /start buyrug‘i
     this.bot.start(async (ctx) => {
-      ctx.session = {};
+      this.resetSession(ctx);
       await ctx.reply(
         'Salom! Siz foydalanuvchimisiz yoki taxi haydovchi?',
         Markup.keyboard([["Yo'lovchi", 'Taxi Haydovchi']])
@@ -38,9 +49,10 @@ export class TelegramService {
       );
     });
 
-    // FOYDALANUVCHI
+    // Yo‘lovchi tanlandi
     this.bot.hears("Yo'lovchi", async (ctx) => {
-      ctx.session.step = 'awaitingUserRoute';
+      ctx.session!.step = 'awaitingUserRoute';
+      ctx.session!.role = 'passenger';
       await ctx.reply(
         'Qayerdan qayergacha yoʻnalishni tanlang:',
         Markup.keyboard([
@@ -52,9 +64,10 @@ export class TelegramService {
       );
     });
 
-    // TAXI HAYDOVCHI
+    // Haydovchi tanlandi
     this.bot.hears('Taxi Haydovchi', async (ctx) => {
-      ctx.session.step = 'awaitingDriverRoute';
+      ctx.session!.step = 'awaitingDriverRoute';
+      ctx.session!.role = 'driver';
       await ctx.reply(
         'Qayerdan qayergacha yoʻnalishni tanlang:',
         Markup.keyboard([
@@ -66,138 +79,164 @@ export class TelegramService {
       );
     });
 
-    // TEXT HANDLER
+    // Matnli xabarlar
     this.bot.on('text', async (ctx) => {
-      const step = ctx.session?.step;
-      const text = ctx.message.text;
+      if (!ctx.message?.text) return;
 
-      // === FOYDALANUVCHI ===
-      if (step === 'awaitingUserRoute') {
-        if (text === 'Beshariq ➡️ Fargʻona' || text === 'Fargʻona ➡️ Beshariq') {
-          ctx.session.route = text;
-          ctx.session.step = 'awaitingUserPhone';
-          await ctx.reply('Iltimos, telefon raqamingizni yuboring:', Markup.removeKeyboard());
-        } else {
-          await ctx.reply('Iltimos, menyudan yo‘nalishni tanlang!');
-        }
-      } else if (step === 'awaitingUserPhone') {
-        const phoneRegex = /^\+?\d{9,15}$/;
-        if (!phoneRegex.test(text)) {
-          return await ctx.reply('Iltimos, telefon raqamini to‘g‘ri formatda yuboring (masalan: +998901234567)');
-        }
+      const text = ctx.message.text.trim();
 
-        const msg = `🚕 Yangi yo‘lovchi:\n🛣 Yo‘nalish: ${ctx.session.route}\n📞 Tel: ${text}\n👤 ${ctx.from?.first_name || 'Ismsiz'}`;
-        try {
-          await this.safeSendMessage(process.env.GROUP_ID || '', msg);
-          await ctx.reply('Rahmat! Ma’lumotlaringiz jo‘natildi.', Markup.removeKeyboard());
-        } catch (error) {
-          await ctx.reply('Xatolik yuz berdi.');
-        }
-
+      if (!ctx.session) {
+        this.logger.warn('Session mavjud emas, uni tiklayman.');
         ctx.session = {};
       }
 
-      // === TAXI HAYDOVCHI ===
-      else if (step === 'awaitingDriverRoute') {
-        if (text === 'Beshariq ➡️ Fargʻona' || text === 'Fargʻona ➡️ Beshariq') {
-          ctx.session.route = text;
-          ctx.session.step = 'awaitingDriverPhone';
-          await ctx.reply('Iltimos, telefon raqamingizni yuboring:', Markup.removeKeyboard());
-        } else {
-          await ctx.reply('Iltimos, menyudan yo‘nalishni tanlang!');
+      const step = ctx.session.step;
+
+      try {
+        switch (step) {
+          case 'awaitingUserRoute':
+            if (this.isValidRoute(text)) {
+              ctx.session.route = text;
+              ctx.session.step = 'awaitingUserPhone';
+              await ctx.reply('Iltimos, telefon raqamingizni yuboring:', Markup.removeKeyboard());
+            } else {
+              await ctx.reply('Iltimos, menyudan yo‘nalishni tanlang!');
+            }
+            break;
+
+          case 'awaitingUserPhone':
+            if (!this.isValidPhone(text)) {
+              await ctx.reply('Iltimos, telefon raqamini to‘g‘ri formatda yuboring (masalan: +998901234567)');
+              break;
+            }
+            ctx.session.phone = text;
+            await this.sendToGroup(ctx, this.buildPassengerMessage(ctx, text), 'passenger');
+            break;
+
+          case 'awaitingDriverRoute':
+            if (this.isValidRoute(text)) {
+              ctx.session.route = text;
+              ctx.session.step = 'awaitingDriverPhone';
+              await ctx.reply('Iltimos, telefon raqamingizni yuboring:', Markup.removeKeyboard());
+            } else {
+              await ctx.reply('Iltimos, menyudan yo‘nalishni tanlang!');
+            }
+            break;
+
+          case 'awaitingDriverPhone':
+            if (!this.isValidPhone(text)) {
+              await ctx.reply('Iltimos, telefon raqamini to‘g‘ri formatda yuboring (masalan: +998901234567)');
+              break;
+            }
+            ctx.session.phone = text;
+            ctx.session.step = 'awaitingDriverSeats';
+            await ctx.reply('Mashinangizda nechta bo‘sh joy bor?', Markup.keyboard([['1', '2', '3', '4']]).resize().oneTime());
+            break;
+
+          case 'awaitingDriverSeats':
+            const seats = parseInt(text, 10);
+            if (![1, 2, 3, 4].includes(seats)) {
+              await ctx.reply('Iltimos, 1 dan 4 gacha raqamni tanlang.');
+              break;
+            }
+            ctx.session.seats = seats;
+            ctx.session.step = 'awaitingDriverWoman';
+            await ctx.reply('Mashinada ayol yo‘lovchi bormi?', Markup.keyboard([['Ha', 'Yo‘q']]).resize().oneTime());
+            break;
+
+          case 'awaitingDriverWoman':
+            if (!['Ha', 'Yo‘q'].includes(text)) {
+              await ctx.reply('Iltimos, "Ha" yoki "Yo‘q" ni tanlang.');
+              break;
+            }
+            ctx.session.hasWoman = text === 'Ha';
+            ctx.session.step = 'awaitingDriverAC';
+            await ctx.reply('Mashinada konditsioner bormi?', Markup.keyboard([['Ha', 'Yo‘q']]).resize().oneTime());
+            break;
+
+          case 'awaitingDriverAC':
+            if (!['Ha', 'Yo‘q'].includes(text)) {
+              await ctx.reply('Iltimos, "Ha" yoki "Yo‘q" ni tanlang.');
+              break;
+            }
+            ctx.session.hasAC = text === 'Ha';
+            ctx.session.step = 'awaitingDriverTime';
+            await ctx.reply('Iltimos, jo‘nash vaqtini kiriting (masalan: 14:00):', Markup.removeKeyboard());
+            break;
+
+          case 'awaitingDriverTime':
+            if (!this.isValidTime(text)) {
+              await ctx.reply('Iltimos, vaqtni HH:MM formatda kiriting (masalan: 08:30 yoki 17:45)');
+              break;
+            }
+            ctx.session.time = text;
+            ctx.session.step = 'awaitingDriverPost';
+            await ctx.reply('Poshta qabul qilasizmi?', Markup.keyboard([['Ha', 'Yo‘q']]).resize().oneTime());
+            break;
+
+          case 'awaitingDriverPost':
+            if (!['Ha', 'Yo‘q'].includes(text)) {
+              await ctx.reply('Iltimos, "Ha" yoki "Yo‘q" ni tanlang.');
+              break;
+            }
+            ctx.session.acceptsPost = text === 'Ha';
+
+            await this.sendToGroup(ctx, this.buildDriverMessage(ctx), 'driver');
+            break;
+
+          default:
+            await ctx.reply('Iltimos, /start buyrug‘ini yuboring va menyudan foydalaning.');
         }
-      } else if (step === 'awaitingDriverPhone') {
-        const phoneRegex = /^\+?\d{9,15}$/;
-        if (!phoneRegex.test(text)) {
-          return await ctx.reply('Iltimos, telefon raqamini to‘g‘ri formatda yuboring (masalan: +998901234567)');
-        }
-
-        ctx.session.phone = text;
-        ctx.session.step = 'awaitingDriverSeats';
-        await ctx.reply(
-          'Mashinangizda nechta bo‘sh joy bor?',
-          Markup.keyboard([['1', '2', '3', '4']]).resize().oneTime()
-        );
-      } else if (step === 'awaitingDriverSeats') {
-        const seats = parseInt(text);
-        if (![1, 2, 3, 4].includes(seats)) {
-          return await ctx.reply('Iltimos, 1 dan 4 gacha raqamni tanlang.');
-        }
-
-        ctx.session.seats = seats;
-        ctx.session.step = 'awaitingDriverWoman';
-        await ctx.reply(
-          'Mashinada ayol yo‘lovchi bormi?',
-          Markup.keyboard([['Ha', 'Yo‘q']]).resize().oneTime()
-        );
-      } else if (step === 'awaitingDriverWoman') {
-        if (!['Ha', 'Yo‘q'].includes(text)) {
-          return await ctx.reply('Iltimos, "Ha" yoki "Yo‘q" ni tanlang.');
-        }
-
-        ctx.session.hasWoman = text === 'Ha';
-        ctx.session.step = 'awaitingDriverAC';
-        await ctx.reply(
-          'Mashinada konditsioner bormi?',
-          Markup.keyboard([['Ha', 'Yo‘q']]).resize().oneTime()
-        );
-      } else if (step === 'awaitingDriverAC') {
-        if (!['Ha', 'Yo‘q'].includes(text)) {
-          return await ctx.reply('Iltimos, "Ha" yoki "Yo‘q" ni tanlang.');
-        }
-
-        ctx.session.hasAC = text === 'Ha';
-        ctx.session.step = 'awaitingDriverTime';
-        await ctx.reply('Iltimos, jo‘nash vaqtini kiriting (masalan: 14:00):', Markup.removeKeyboard());
-      } else if (step === 'awaitingDriverTime') {
-        const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
-        if (!timeRegex.test(text)) {
-          return await ctx.reply('Iltimos, vaqtni HH:MM formatda kiriting (masalan: 08:30 yoki 17:45)');
-        }
-
-        ctx.session.time = text;
-        ctx.session.step = 'awaitingDriverPost';
-        await ctx.reply(
-          'Poshta qabul qilasizmi?',
-          Markup.keyboard([['Ha', 'Yo‘q']]).resize().oneTime()
-        );
-      } else if (step === 'awaitingDriverPost') {
-        if (!['Ha', 'Yo‘q'].includes(text)) {
-          return await ctx.reply('Iltimos, "Ha" yoki "Yo‘q" ni tanlang.');
-        }
-
-        ctx.session.acceptsPost = text === 'Ha';
-
-        const msg = `🚖 Taxi haydovchi:\n🛣 Yo‘nalish: ${ctx.session.route}\n📞 Tel: ${ctx.session.phone}\n👥 Joylar: ${ctx.session.seats}\n👩 Ayol yo‘lovchi: ${ctx.session.hasWoman ? 'Bor' : 'Yo‘q'}\n❄️ Konditsioner: ${ctx.session.hasAC ? 'Bor' : 'Yo‘q'}\n⏰ Jo‘nash vaqti: ${ctx.session.time}\n📦 Poshta: ${ctx.session.acceptsPost ? 'Qabul qilinadi' : 'Qabul qilinmaydi'}\n👤 ${ctx.from?.first_name || 'Ismsiz'}`;
-
-        try {
-          await this.safeSendMessage(process.env.GROUP_ID || '', msg);
-          await ctx.reply('Rahmat! Ma’lumotlaringiz jo‘natildi.', Markup.removeKeyboard());
-        } catch (error) {
-          await ctx.reply('Xatolik yuz berdi.');
-        }
-
-        ctx.session = {};
-      } else {
-        await ctx.reply('Iltimos, /start buyrug‘ini yuboring va menyudan foydalaning.');
+      } catch (error) {
+        this.logger.error('Xatolik:', error);
+        await ctx.reply('Kutilmagan xatolik yuz berdi, iltimos keyinroq urinib ko‘ring.');
+        this.resetSession(ctx);
       }
     });
 
     this.bot.launch();
+    this.logger.log('Telegram bot ishga tushdi');
   }
 
-  private async safeSendMessage(chatId: string | number, message: string): Promise<void> {
+  private resetSession(ctx: MyContext) {
+    ctx.session = {};
+  }
+
+  private isValidRoute(text: string): boolean {
+    const validRoutes = ['Beshariq ➡️ Fargʻona', 'Fargʻona ➡️ Beshariq'];
+    return validRoutes.includes(text);
+  }
+
+  private isValidPhone(text: string): boolean {
+    return /^\+?\d{9,15}$/.test(text);
+  }
+
+  private isValidTime(text: string): boolean {
+    return /^([01]\d|2[0-3]):([0-5]\d)$/.test(text);
+  }
+
+  private buildPassengerMessage(ctx: MyContext, phone: string): string {
+    return `🚕 Yangi yo‘lovchi:\n🛣 Yo‘nalish: ${ctx.session!.route}\n📞 Tel: ${phone}\n👤 ${ctx.from?.first_name || 'Ismsiz'}`;
+  }
+
+  private buildDriverMessage(ctx: MyContext): string {
+    return `🚖 Taxi haydovchi:\n🛣 Yo‘nalish: ${ctx.session!.route}\n📞 Tel: ${ctx.session!.phone}\n👥 Joylar: ${ctx.session!.seats}\n👩 Ayol yo‘lovchi: ${ctx.session!.hasWoman ? 'Bor' : 'Yo‘q'}\n❄️ Konditsioner: ${ctx.session!.hasAC ? 'Bor' : 'Yo‘q'}\n⏰ Vaqt: ${ctx.session!.time}\n📮 Poshta qabul qilish: ${ctx.session!.acceptsPost ? 'Ha' : 'Yo‘q'}`;
+  }
+
+  private async sendToGroup(ctx: MyContext, message: string, role: 'passenger' | 'driver') {
     try {
-      await this.bot.telegram.sendMessage(chatId, message);
+      const chatId = role === 'passenger' ? this.PASSENGER_GROUP_ID : this.DRIVER_GROUP_ID;
+      await ctx.telegram.sendMessage(chatId, message);
+      await ctx.reply('Ma\'lumot qabul qilindi. Rahmat!');
+      this.resetSession(ctx);
     } catch (error: any) {
-      if (error?.response?.error_code === 429 && error.response.parameters?.retry_after) {
-        const waitTime = error.response.parameters.retry_after;
-        this.logger.warn(`Too many requests. Waiting for ${waitTime} seconds...`);
-        await new Promise((resolve) => setTimeout(resolve, waitTime * 1000));
-        return this.safeSendMessage(chatId, message);
+      if (error.description?.includes('retry after')) {
+        const retryAfter = parseInt(error.description.match(/retry after (\d+)/)?.[1] || '3', 10);
+        await new Promise((r) => setTimeout(r, (retryAfter + 1) * 1000));
+        return this.sendToGroup(ctx, message, role);
       } else {
-        this.logger.error('Xabar yuborishda xatolik:', error);
-        throw error;
+        this.logger.error('Xatolik guruhga yuborishda:', error);
+        await ctx.reply('Xatolik yuz berdi, iltimos keyinroq urinib ko‘ring.');
       }
     }
   }
