@@ -223,9 +223,9 @@ export class TelegramService {
     return `🚖 Taxi haydovchi:\n🛣 Yo‘nalish: ${ctx.session!.route}\n📞 Tel: ${ctx.session!.phone}\n👥 Joylar: ${ctx.session!.seats}\n👩 Ayol yo‘lovchi: ${ctx.session!.hasWoman ? 'Bor' : 'Yo‘q'}\n❄️ Konditsioner: ${ctx.session!.hasAC ? 'Bor' : 'Yo‘q'}\n⏰ Vaqt: ${ctx.session!.time}\n📮 Poshta qabul qilish: ${ctx.session!.acceptsPost ? 'Ha' : 'Yo‘q'}`;
   }
 
-  private async sendToGroup(ctx: MyContext, message: string, role: 'passenger' | 'driver') {
+  private async sendToGroup(ctx: MyContext, message: string, role:   'driver' | 'passenger') {
     try {
-      const chatId = role === 'passenger' ? this.PASSENGER_GROUP_ID : this.DRIVER_GROUP_ID;
+      const chatId = role === 'driver' ? this.PASSENGER_GROUP_ID : this.DRIVER_GROUP_ID;
       await ctx.telegram.sendMessage(chatId, message);
       await ctx.reply('Ma\'lumot qabul qilindi. Rahmat!');
       this.resetSession(ctx);
@@ -241,3 +241,4 @@ export class TelegramService {
     }
   }
 }
+
