@@ -13,32 +13,21 @@ interface MySession {
   acceptsPost?: boolean;
 }
 
-type MyContext = Context & { session: MySession | undefined };
+type MyContext = Context & { session: MySession };
 
 @Injectable()
 export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
   private bot: Telegraf<MyContext>;
 
-  // Yo‘lovchi va Haydovchi guruh chat IDlari
   private readonly PASSENGER_GROUP_ID = -1002083291047;
   private readonly DRIVER_GROUP_ID = -1002574496144;
 
   constructor() {
     this.bot = new Telegraf<MyContext>(process.env.BOT_TOKEN || '');
 
-    // Session middleware
-    this.bot.use(session());
+    this.bot.use(session({ defaultSession: (): MySession => ({}) }));
 
-    // Sessionni doim bo‘sh ob’ekt sifatida o‘rnatish
-    this.bot.use(async (ctx, next) => {
-      if (!ctx.session) {
-        ctx.session = {};
-      }
-      await next();
-    });
-
-    // /start buyrug‘i
     this.bot.start(async (ctx) => {
       this.resetSession(ctx);
       await ctx.reply(
@@ -49,10 +38,9 @@ export class TelegramService {
       );
     });
 
-    // Yo‘lovchi tanlandi
     this.bot.hears("Yo'lovchi", async (ctx) => {
-      ctx.session!.step = 'awaitingUserRoute';
-      ctx.session!.role = 'passenger';
+      ctx.session.step = 'awaitingUserRoute';
+      ctx.session.role = 'passenger';
       await ctx.reply(
         'Qayerdan qayergacha yoʻnalishni tanlang:',
         Markup.keyboard([
@@ -64,10 +52,9 @@ export class TelegramService {
       );
     });
 
-    // Haydovchi tanlandi
     this.bot.hears('Taxi Haydovchi', async (ctx) => {
-      ctx.session!.step = 'awaitingDriverRoute';
-      ctx.session!.role = 'driver';
+      ctx.session.step = 'awaitingDriverRoute';
+      ctx.session.role = 'driver';
       await ctx.reply(
         'Qayerdan qayergacha yoʻnalishni tanlang:',
         Markup.keyboard([
@@ -79,16 +66,9 @@ export class TelegramService {
       );
     });
 
-    // Matnli xabarlar
     this.bot.on('text', async (ctx) => {
-      if (!ctx.message?.text) return;
-
-      const text = ctx.message.text.trim();
-
-      if (!ctx.session) {
-        this.logger.warn('Session mavjud emas, uni tiklayman.');
-        ctx.session = {};
-      }
+      const text = ctx.message?.text?.trim();
+      if (!text) return;
 
       const step = ctx.session.step;
 
@@ -110,7 +90,7 @@ export class TelegramService {
               break;
             }
             ctx.session.phone = text;
-            await this.sendToGroup(ctx, this.buildPassengerMessage(ctx, text), 'passenger');
+            await this.sendToGroup(ctx, this.buildPassengerMessage(ctx), 'passenger');
             break;
 
           case 'awaitingDriverRoute':
@@ -161,7 +141,7 @@ export class TelegramService {
             }
             ctx.session.hasAC = text === 'Ha';
             ctx.session.step = 'awaitingDriverTime';
-            await ctx.reply('Iltimos, jo‘nash vaqtini kiriting (masalan: 14:00):', Markup.removeKeyboard());
+            await ctx.reply('Jo‘nash vaqtini kiriting (masalan: 14:00):', Markup.removeKeyboard());
             break;
 
           case 'awaitingDriverTime':
@@ -180,7 +160,6 @@ export class TelegramService {
               break;
             }
             ctx.session.acceptsPost = text === 'Ha';
-
             await this.sendToGroup(ctx, this.buildDriverMessage(ctx), 'driver');
             break;
 
@@ -189,7 +168,7 @@ export class TelegramService {
         }
       } catch (error) {
         this.logger.error('Xatolik:', error);
-        await ctx.reply('Kutilmagan xatolik yuz berdi, iltimos keyinroq urinib ko‘ring.');
+        await ctx.reply('Kutilmagan xatolik yuz berdi.');
         this.resetSession(ctx);
       }
     });
@@ -215,19 +194,19 @@ export class TelegramService {
     return /^([01]\d|2[0-3]):([0-5]\d)$/.test(text);
   }
 
-  private buildPassengerMessage(ctx: MyContext, phone: string): string {
-    return `🚕 Yangi yo‘lovchi:\n🛣 Yo‘nalish: ${ctx.session!.route}\n📞 Tel: ${phone}\n👤 ${ctx.from?.first_name || 'Ismsiz'}`;
+  private buildPassengerMessage(ctx: MyContext): string {
+    return `🚕 Yangi yo‘lovchi:\n🛣 Yo‘nalish: ${ctx.session.route}\n📞 Tel: ${ctx.session.phone}\n👤 ${ctx.from?.first_name || 'Ismsiz'}`;
   }
 
   private buildDriverMessage(ctx: MyContext): string {
-    return `🚖 Taxi haydovchi:\n🛣 Yo‘nalish: ${ctx.session!.route}\n📞 Tel: ${ctx.session!.phone}\n👥 Joylar: ${ctx.session!.seats}\n👩 Ayol yo‘lovchi: ${ctx.session!.hasWoman ? 'Bor' : 'Yo‘q'}\n❄️ Konditsioner: ${ctx.session!.hasAC ? 'Bor' : 'Yo‘q'}\n⏰ Vaqt: ${ctx.session!.time}\n📮 Poshta qabul qilish: ${ctx.session!.acceptsPost ? 'Ha' : 'Yo‘q'}`;
+    return `🚖 Taxi haydovchi:\n🛣 Yo‘nalish: ${ctx.session.route}\n📞 Tel: ${ctx.session.phone}\n👥 Joylar: ${ctx.session.seats}\n👩 Ayol yo‘lovchi: ${ctx.session.hasWoman ? 'Bor' : 'Yo‘q'}\n❄️ Konditsioner: ${ctx.session.hasAC ? 'Bor' : 'Yo‘q'}\n⏰ Vaqt: ${ctx.session.time}\n📮 Poshta: ${ctx.session.acceptsPost ? 'Ha' : 'Yo‘q'}`;
   }
 
-  private async sendToGroup(ctx: MyContext, message: string, role:   'driver' | 'passenger') {
+  private async sendToGroup(ctx: MyContext, message: string, role: 'driver' | 'passenger') {
     try {
       const chatId = role === 'driver' ? this.PASSENGER_GROUP_ID : this.DRIVER_GROUP_ID;
       await ctx.telegram.sendMessage(chatId, message);
-      await ctx.reply('Ma\'lumot qabul qilindi. Rahmat!');
+      await ctx.reply("Ma'lumot qabul qilindi. Rahmat!");
       this.resetSession(ctx);
     } catch (error: any) {
       if (error.description?.includes('retry after')) {
@@ -241,5 +220,3 @@ export class TelegramService {
     }
   }
 }
-
-
