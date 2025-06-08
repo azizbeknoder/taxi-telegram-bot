@@ -258,7 +258,7 @@ export class TelegramService {
     try {
       // Bu yerda chatId teskari bo‘lib qo‘yilgan edi, tuzatildi:
       // Agar rol driver bo'lsa, xabar haydovchilar guruhiga, aks holda yo'lovchilar guruhiga yuboriladi.
-      const chatId = role === "driver" ? this.DRIVER_GROUP_ID : this.PASSENGER_GROUP_ID;
+      const chatId = role === "driver" ?   this.PASSENGER_GROUP_ID: this.DRIVER_GROUP_ID
 
       await ctx.telegram.sendMessage(chatId, message);
       await ctx.reply("Ma'lumot qabul qilindi. Rahmat!");
